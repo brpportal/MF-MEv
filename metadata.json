@@ -1,0 +1,6 @@
+{
+  "name": "MF MPanel Evidence",
+  "description": "Advanced Android Evidence Collection App with in-app browser session reuse, minimal capture interface, offline Room storage, AES-256 encrypted ZIP export, and WhatsApp sharing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

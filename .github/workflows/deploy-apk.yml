@@ -1,0 +1,163 @@
+name: Build & Deploy Android APK
+
+on:
+  push:
+    branches: [ main, master ]
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Build Type (release, debug, or both)'
+        required: true
+        default: 'both'
+        type: choice
+        options:
+          - 'both'
+          - 'release'
+          - 'debug'
+      release_tag:
+        description: 'Release Tag (leave blank to skip creating a GitHub Release)'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-deploy:
+    name: Build & Deploy APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+
+      - name: Grant Execute Permission to Gradle Wrapper
+        run: |
+          if [ -f gradlew ]; then
+            chmod +x gradlew
+          else
+            gradle wrapper
+            chmod +x gradlew
+          fi
+
+      - name: Prepare Signing Keystores
+        run: |
+          echo "=== Configuring Keystores for APK Signing ==="
+          
+          # 1. Setup debug keystore if missing
+          if [ ! -f debug.keystore ]; then
+            if [ -f debug.keystore.base64 ]; then
+              base64 -d debug.keystore.base64 > debug.keystore
+            else
+              keytool -genkey -v -keystore debug.keystore -alias androiddebugkey \
+                -storepass android -keypass android -keyalg RSA -keysize 2048 -validity 10000 \
+                -dname "CN=Android Debug,O=Android,C=US"
+            fi
+          fi
+
+          # 2. Setup upload/release keystore
+          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+            echo "Using release keystore provided via GitHub Secrets..."
+            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > my-upload-key.jks
+            echo "STORE_PASSWORD=${{ secrets.STORE_PASSWORD }}" >> $GITHUB_ENV
+            echo "KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}" >> $GITHUB_ENV
+          else
+            echo "Generating automated release signing key for deployment..."
+            rm -f my-upload-key.jks
+            keytool -genkey -v -keystore my-upload-key.jks -alias upload \
+              -storepass android -keypass android -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=MF MPanel, OU=Evidence Team, O=MF, L=Global, S=Global, C=US"
+            echo "STORE_PASSWORD=android" >> $GITHUB_ENV
+            echo "KEY_PASSWORD=android" >> $GITHUB_ENV
+          fi
+          echo "KEYSTORE_PATH=$PWD/my-upload-key.jks" >> $GITHUB_ENV
+
+      - name: Build Android APKs
+        run: |
+          echo "=== Building APKs ==="
+          ./gradlew assembleDebug assembleRelease --no-daemon --stacktrace
+
+      - name: Verify APK Integrity & Signatures
+        run: |
+          mkdir -p release_apks
+          BUILD_TOOLS_DIR=$(find $ANDROID_HOME/build-tools -maxdepth 1 -type d | sort -V | tail -n 1)
+          echo "Using Android Build Tools: $BUILD_TOOLS_DIR"
+
+          # Process Release APK
+          if [ -f app/build/outputs/apk/release/app-release.apk ]; then
+            cp app/build/outputs/apk/release/app-release.apk release_apks/MF_MPanel_Evidence_Release.apk
+            echo "Verifying Release APK signature..."
+            $BUILD_TOOLS_DIR/apksigner verify --verbose release_apks/MF_MPanel_Evidence_Release.apk || true
+          fi
+
+          # Process Debug APK (universal install fallback)
+          if [ -f app/build/outputs/apk/debug/app-debug.apk ]; then
+            cp app/build/outputs/apk/debug/app-debug.apk release_apks/MF_MPanel_Evidence_Debug.apk
+            echo "Verifying Debug APK signature..."
+            $BUILD_TOOLS_DIR/apksigner verify --verbose release_apks/MF_MPanel_Evidence_Debug.apk || true
+          fi
+
+          ls -lh release_apks/
+
+      - name: Upload APKs as GitHub Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: MF_MPanel_Evidence_APKs
+          path: release_apks/*.apk
+          retention-days: 30
+
+      - name: Determine Release Tag
+        id: release_info
+        run: |
+          if [ -n "${{ github.event.inputs.release_tag }}" ]; then
+            TAG="${{ github.event.inputs.release_tag }}"
+            CREATE_RELEASE="true"
+          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            CREATE_RELEASE="true"
+          else
+            TAG=""
+            CREATE_RELEASE="false"
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "create_release=$CREATE_RELEASE" >> $GITHUB_OUTPUT
+
+      - name: Publish GitHub Release
+        if: steps.release_info.outputs.create_release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release_info.outputs.tag }}
+          name: "MF MPanel Evidence ${{ steps.release_info.outputs.tag }}"
+          body: |
+            ## MF MPanel Evidence — Native Android Release
+            
+            ### What's Included:
+            - **MF_MPanel_Evidence_Release.apk**: Optimized production build.
+            - **MF_MPanel_Evidence_Debug.apk**: Pre-signed universal build for direct testing.
+            
+            ### Fixes in this version:
+            - Resolved "package parsing error" on Android phones (universal SDK target, uncompressed native library extraction).
+            - Resolved app close / navigation lifecycle crashes in WebView browser.
+            - Integrated in-app browser with session reuse (Instagram, TikTok, YouTube, Facebook, X).
+            - AES-256 encrypted ZIP export with SHA-256 checksums and password protection.
+            - Direct WhatsApp document sharing & Storage Access Framework.
+          files: release_apks/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,146 @@
+package com.example.data.repository
+
+import android.content.Context
+import android.util.Log
+import androidx.work.Constraints
+import androidx.work.CoroutineWorker
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.WorkerParameters
+import com.example.data.SupabaseClient
+import com.example.data.local.AppDatabase
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import java.util.concurrent.TimeUnit
+
+class SyncRepository(
+    private val context: Context,
+    private val database: AppDatabase = AppDatabase.getDatabase(context)
+) {
+    private val workManager = WorkManager.getInstance(context)
+
+    fun scheduleBackgroundSync() {
+        val constraints = Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .build()
+
+        val periodicSyncRequest = PeriodicWorkRequestBuilder<SyncWorker>(15, TimeUnit.MINUTES)
+            .setConstraints(constraints)
+            .build()
+
+        workManager.enqueueUniquePeriodicWork(
+            "EvidenceMetadataSync",
+            ExistingPeriodicWorkPolicy.KEEP,
+            periodicSyncRequest
+        )
+    }
+
+    fun triggerImmediateSync() {
+        val constraints = Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .build()
+
+        val syncRequest = OneTimeWorkRequestBuilder<SyncWorker>()
+            .setConstraints(constraints)
+            .build()
+
+        workManager.enqueueUniqueWork(
+            "ImmediateEvidenceSync",
+            ExistingWorkPolicy.REPLACE,
+            syncRequest
+        )
+    }
+
+    suspend fun executeSyncNow(): SyncSummary = withContext(Dispatchers.IO) {
+        val pendingOps = database.syncOutboxDao().getPendingOperations(50)
+        var successful = 0
+        var failed = 0
+
+        for (op in pendingOps) {
+            try {
+                val json = JSONObject(op.payloadJson)
+                val map = mutableMapOf<String, Any>()
+                val keys = json.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    map[key] = json.get(key)
+                }
+                map["operation_id"] = op.operationId
+                map["batch_id"] = op.batchId ?: ""
+
+                val targetTable = when (op.eventType) {
+                    "SCREENSHOT_CAPTURED" -> "evidence_screenshots"
+                    "EXPORT_CREATED" -> "evidence_exports"
+                    "BATCH_IMPORTED" -> "evidence_batches"
+                    else -> "evidence_workflow_events"
+                }
+
+                // Sync to Supabase PostgREST table
+                val ok = SupabaseClient.syncRecord(context, targetTable, map)
+
+                if (ok) {
+                    database.syncOutboxDao().updateStatus(
+                        opId = op.operationId,
+                        status = "SUCCESS",
+                        timestamp = System.currentTimeMillis(),
+                        error = null
+                    )
+
+                    if (!op.screenshotId.isNullOrBlank()) {
+                        database.screenshotDao().updateSyncStatus(op.screenshotId, "SYNCED")
+                    }
+                    successful++
+                } else {
+                    failed++
+                }
+            } catch (e: Exception) {
+                Log.e("SyncRepository", "Sync failed for op: ${op.operationId}", e)
+                database.syncOutboxDao().updateStatus(
+                    opId = op.operationId,
+                    status = "FAILED",
+                    timestamp = System.currentTimeMillis(),
+                    error = e.localizedMessage
+                )
+                failed++
+            }
+        }
+
+        SyncSummary(
+            totalProcessed = pendingOps.size,
+            successfulCount = successful,
+            failedCount = failed
+        )
+    }
+}
+
+data class SyncSummary(
+    val totalProcessed: Int,
+    val successfulCount: Int,
+    val failedCount: Int
+)
+
+class SyncWorker(
+    appContext: Context,
+    workerParams: WorkerParameters
+) : CoroutineWorker(appContext, workerParams) {
+
+    override suspend fun doWork(): Result {
+        val syncRepo = SyncRepository(applicationContext)
+        return try {
+            val summary = syncRepo.executeSyncNow()
+            if (summary.failedCount > 0 && summary.successfulCount == 0) {
+                Result.retry()
+            } else {
+                Result.success()
+            }
+        } catch (e: Exception) {
+            Log.e("SyncWorker", "Error in sync worker", e)
+            Result.retry()
+        }
+    }
+}

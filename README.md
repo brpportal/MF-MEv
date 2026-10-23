@@ -4,6 +4,23 @@ MF MPanel Evidence is a native Android application built for the MF MPanel ecosy
 
 ---
 
+## 📲 Download & Install
+
+Sab se nayi signed application seedha yahan se download karo:
+
+[![Download APK](https://img.shields.io/badge/Download-APK%20(Release)-brightgreen?style=for-the-badge&logo=android)](https://github.com/brpportal/MF-MEv/releases/latest/download/MF_MPanel_Evidence_Release.apk)
+
+- **[⬇️ MF_MPanel_Evidence_Release.apk](https://github.com/brpportal/MF-MEv/releases/latest/download/MF_MPanel_Evidence_Release.apk)** — asal production build (recommended)
+- **[⬇️ MF_MPanel_Evidence_Debug.apk](https://github.com/brpportal/MF-MEv/releases/latest/download/MF_MPanel_Evidence_Debug.apk)** — universal debug build (agar Release install na ho)
+- Saare versions: [Releases page](https://github.com/brpportal/MF-MEv/releases)
+
+**Install karne ka tareeqa:**
+1. Upar wale button se APK download karo
+2. File kholo — Android "unknown apps" ki ijazat mange to **Allow** kar do
+3. **Install** dabao — ho gaya ✅
+
+---
+
 ## 1. Core Workflow
 
 ```text

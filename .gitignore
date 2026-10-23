@@ -16,3 +16,6 @@
 local.properties
 .env
 debug.keystore
+
+# Signing keystore — CI secret se ata hai, repo me nahi jata
+my-upload-key.jks
